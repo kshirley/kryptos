@@ -1,0 +1,218 @@
+---
+title: "Kryptos K1"
+author: "Kenny Shirley"
+date: "September 1, 2019"
+output: 
+  html_document:
+    smart: FALSE
+    toc: TRUE
+    theme: readable
+editor_options: 
+  chunk_output_type: console
+---
+  
+```{r global-options, include = FALSE}
+## Global options
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, 
+                      message = FALSE, 
+                      cache = FALSE, 
+                      comment = "")
+```
+
+```{r set-options, echo=FALSE}
+#setwd("~/misc/kryptos")
+options(width = 80)
+library(dplyr,      quietly = TRUE)
+library(knitr,      quietly = TRUE)
+library(tidyr,      quietly = TRUE)
+library(data.table, quietly = TRUE)
+library(ggplot2,    quietly = TRUE)
+library(plotly,     quietly = TRUE)
+```
+
+
+## Solving Kryptos 1 ("K1")
+
+``` {r k1}
+cipher_text <- readLines("ciphertext.txt")
+vigenere_table <- readLines("vigenere_table.txt")
+K1 <- unlist(strsplit(paste(cipher_text[1:2], collapse = ""), ""))
+```
+
+For background on Kryptos, see [my introductory notebook here]().
+
+We know that K1 was encoded using a keyed Vigenere cipher with the keyword "PALIMPSEST", and using the Vigenere Table engraved into the sculpture itself (which itself uses the keyword "KRYPTOS" to construct its alphabet).
+
+First, we'll write a function to simply decrypt a keyed Vigenere cipher given a known keyword and alphabet, and we'll confirm the solution to K1. Then, we'll show a way to solve this cipher wihtout knowing the keyword, by using a dictionary attack and a bigram model for the English language to score the likelihood of each candidate solution.
+
+### Confirming the Solution to K1
+
+The first thing to know about using the Vigenere table in the Kryptos sculpture is that you have to ignore the first and last rows of the table, and the first "column"; all of these are just the alphabet from A to Z, and are included for artistic reasons only (at least with regards to K1 - K3).
+
+To decode the Vigenere cipher knowing that the keyword is "PALIMPSEST", you do the following:
+
+- The first letter of the keyword is "P". Ignoring the leftmost "column" of characters on the Vigenere Table, find the row that starts with "P". It is row 5.
+
+- The first letter of the ciphertext is "E". In row 5 of the Vigenere Table, find the first occurrence of the letter "E". It is the 9th character in that row (again, ignoring the first column of letters).
+
+- Now go up to the second row (ignoring the first row), and read off the letter that appears there: "B". This is the first character of the plaintext, i.e. the decoded message.
+
+- Repeat this process for each character of the ciphertext, recycling the 10 characters of the keyword as necessary until you've reached the end of the ciphertext.
+
+There are 63 characters in K1. 
+
+Let's write a function to decode a keyed Vigenere cipher:
+
+``` {r vigenere}
+# function to decrypt a cipher using a vigenere table and a key:
+decode_vigenere <- function(cipher, key, vigenere_table) {
+  stopifnot(all(cipher %in% c(LETTERS, "?")))
+  stopifnot(all(key %in% LETTERS))
+  row_indices <- match(key, V[, 1])
+  qmark <- cipher == "?"  # force a "?" to decode to itself
+  r <- row_indices[0:(length(cipher[!qmark]) - 1) %% length(row_indices) + 1]
+  D <- matrix(match(V[r, ], LETTERS) - rep(match(cipher[!qmark], LETTERS), 26), 
+              nrow = length(cipher[!qmark]), 
+              ncol = 26)
+  # one entry in each row of D equals zero, except for question marks, which are rows of NA
+  out <- rep("", length(cipher))
+  out[!qmark] <- V[1, (which(t(D) == 0) - 1) %% 26 + 1]
+  out[qmark] <- "?"
+  out
+}
+```
+
+The function takes a chuck of ciphertext (consisting only of uppercase characters and question marks), a keyword, and a Vigenere Table, and it decodes the ciphertext.
+
+Let's run the function using "PALIMPSEST" as the key:
+
+``` {r palimpsest}
+# store the value of the Kryptos Vigenere table in a matrix:
+V <- vector("list", 26)
+alphabet <- rep(unlist(strsplit("KRYPTOSABCDEFGHIJLMNQUVWXZ", split = "")), 2)
+for (i in 1:26) V[[i]] <- alphabet[1:26 + i - 1]
+V <- do.call(cbind, V)
+
+# decode using "PALIMPSEST" as the keyword:
+out <- decode_vigenere(cipher = K1,
+                       key = unlist(strsplit("PALIMPSEST", split = "")), 
+                       vigenere_table = V)
+
+out
+```
+
+If you segment this long string into English words, you get "Between subtle shading and the absence of light lies the nuance of iqlusion".
+
+The last word is supposed to say "illusion" rather than "iqlusion" but there was a mistake (possibly intentional) in the spelling of the keyword in Sanborn's hand-written notes to encrypt the phrase (which he devised himself). He misspelled the keyword "PALIMPCEST" on the sixth repetition, which decrypts to a "Q" instead of an "L".
+
+### Solving K1 without the keyword
+
+It's not terribly exciting that we can decrypt K1 once we already know the solution.
+
+Suppose, though, that we had not known that the keyword was "PALIMPSEST"? Could we still solve it?
+
+We can, with two simple techniques:
+
+1. A "dictionary" that contains every possible keyword that we want to try.
+
+2. A function to "score" each potential solution, in terms of how likely it is to be the actual solution.
+
+Our dictionary will be the 2006 Scrabble Dictionary; it contains 178,691 words.
+
+Our scoring function will compute the probability that a given sequence of letters forms an English-language sentence, based on a simple bigram model for English. In this model, we use the frequencies of each pair of characters from the Google n-grams corpus to compute a Markov model "transition matrix" that allows us to compute the likelihood that any string of characters is an English language sentence.
+
+
+``` {r scrabble}
+# read in the scrabble dictionary:
+scrabble <- readLines("TWL06.txt")
+
+# read in the 2-gram frequencies from the Google n-grams corpus:
+two_gram <- fread("count_2l.txt", data.table = FALSE)
+names(two_gram) <- c("letters", "frequency")
+
+# normalize the frequencies to avoid integer overflow:
+two_gram$normalized <- two_gram$frequency / min(two_gram$frequency)
+
+# build the transition matrix for the bigram model of English:
+two_mat <- matrix(0, 26, 26)
+row_index <- match(substr(two_gram$letters, 1, 1), letters)
+col_index <- match(substr(two_gram$letters, 2, 2), letters)
+two_mat[cbind(row_index, col_index)] <- two_gram$normalized
+rownames(two_mat) <- LETTERS
+colnames(two_mat) <- LETTERS
+
+# divide by row sums to get probabilities:
+theta <- two_mat / rowSums(two_mat)
+
+# get initial state distribution:
+p <- rowSums(two_mat) / sum(two_mat)
+```
+
+Here are the first few rows of the bigram data, which was shared by Peter Norvig in a [book chapter](https://norvig.com/ngrams/) that he wrote in 2009. The file is called "count_2l.txt":
+
+``` {r count-2l, echo = FALSE}
+select(two_gram, -normalized) %>% head()
+```
+
+And here are the first 10 rows and 5 columns of the 26 x 26 transition matrix that results from the bigram data:
+
+``` {r transition_matrix, echo = FALSE}
+theta[1:10, 1:5]
+```
+
+Now we simply loop through the words in our dictionary, trying each one as the keyword of the Vigenere cipher, and compute the log-likelihood of the sequence using our scoring function.
+
+Here are the ten most likely keywords, along with their log-likelihood scores and the resulting plaintext. The key question is, if we hadn't known that "PALIMPSEST" was the keyword, could we have mistakenly concluded that another keyword and message pair was correct?
+
+``` {r decode-vigenere, echo = TRUE, eval = FALSE}
+# function to compute the log-likelihood of a particular snippet of text:
+markov_score <- function(sequence, trans_matrix = theta, initial_probs = p) {
+  n <- length(sequence)
+  row_indices <- match(sequence[1:(n - 1)], LETTERS)
+  col_indices <- match(sequence[2:n], LETTERS)
+  as.numeric(log(p[match(sequence[1], LETTERS)])) + 
+    sum(log(theta[cbind(row_indices, col_indices)]), na.rm = TRUE)
+}
+
+# Now, try all the words in the Scrabble dictionary for K1:
+candidate <- vector("list", length(scrabble))
+loglik <- numeric(length(scrabble))
+for (i in 1:length(scrabble)) {
+  candidate[[i]] <- decode_vigenere(cipher = K1,
+                                    key = unlist(strsplit(scrabble[i], split = "")), 
+                                    vigenere_table = V)
+  loglik[i] <- markov_score(sequence = candidate[[i]])
+}
+```
+
+``` {r save-results, echo = FALSE, eval = FALSE}
+saveRDS(candidate, file = "K1_candidate.rds")
+saveRDS(loglik, file = "K1_loglik.rds")
+```
+
+``` {r load-results, echo = FALSE, eval = TRUE}
+candidate <- readRDS("K1_candidate.rds")
+loglik <- readRDS("K1_loglik.rds")
+```
+
+``` {r show-K1-results}
+# look at the top 10 most likely messages (and keywords):
+top <- order(loglik, decreasing = TRUE)[1:10]
+
+out <- data.frame(key = scrabble[top], 
+                  loglik = loglik[top], 
+                  message = sapply(candidate[top], paste, collapse = ""))
+
+out
+```
+
+A few thoughts:
+
+1. First, we see that yes, this technique, or "attack", correctly decoded the cipher!
+
+2. Looking at the log-likelihoods, and at the resulting candidate solutions, there is really no way that we could have accidentally concluded that some other keyword/message was the correct solution. "PALIMPSEST" gives a message that, according to our bigram model for English, is about $e^{28}$ times more likely than the next most likely solution, which, as you can see, is gibberish.
+
+3. This only took about 35 seconds to compute on my laptop, which is nice.
+
+Let's summarize this solution by stating exactly what hypothesis we tested. We assumed that it was a keyed Vigenere cipher, whose keyword was a single word in the Scrabble dictionary, and whose alphabet was constructed using the word "kryptos". When we get to trying to solve K4, we will be generating lots of these hypotheses, so it might be nice to have as compact a notation for listing them as possible. Let's call this one: **Keyed Vigenere: keyword = single word in Scrabble list (n = 178,691); alphabet = "kryptos"**.
