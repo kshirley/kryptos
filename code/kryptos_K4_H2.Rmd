@@ -1,0 +1,226 @@
+---
+title: "Kryptos K4 Hypothesis 2"
+author: "Kenny Shirley"
+date: "October 3, 2019"
+output: 
+  html_document:
+    smart: FALSE
+    toc: TRUE
+    theme: readable
+editor_options: 
+  chunk_output_type: console
+---
+  
+```{r global-options, include = FALSE}
+## Global options
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, 
+                      message = FALSE, 
+                      cache = FALSE, 
+                      comment = "")
+```
+
+```{r set-options, echo=FALSE}
+#setwd("~/public_git/kryptos/code")
+options(width = 80)
+library(dplyr,      quietly = TRUE)
+library(knitr,      quietly = TRUE)
+library(tidyr,      quietly = TRUE)
+library(data.table, quietly = TRUE)
+library(ggplot2,    quietly = TRUE)
+library(plotly,     quietly = TRUE)
+library(stringi,    quietly = TRUE)
+```
+
+
+## K4 Hypothesis 2
+
+Hypothesis: Single or Double Columnar Transposition
+
+Let's see if we can decode K4 just like we decoded K3.
+
+First, load the data and some functions.
+
+``` {r decode}
+cipher_text <- readLines("../data/ciphertext.txt")
+vigenere_table <- readLines("../data/vigenere_table.txt")
+K4 <- unlist(strsplit(paste(cipher_text[25:28], collapse = ""), ""))[28:124]
+
+# read in the 2-gram frequencies from the Google n-grams corpus:
+two_gram <- fread("../data/count_2l.txt", data.table = FALSE)
+names(two_gram) <- c("letters", "frequency")
+
+# normalize the frequencies to avoid integer overflow:
+two_gram$normalized <- two_gram$frequency / min(two_gram$frequency)
+
+# build the transition matrix for the bigram model of English:
+two_mat <- matrix(0, 26, 26)
+row_index <- match(substr(two_gram$letters, 1, 1), letters)
+col_index <- match(substr(two_gram$letters, 2, 2), letters)
+two_mat[cbind(row_index, col_index)] <- two_gram$normalized
+rownames(two_mat) <- LETTERS
+colnames(two_mat) <- LETTERS
+
+# divide by row sums to get probabilities:
+theta <- two_mat / rowSums(two_mat)
+
+# get initial state distribution:
+p <- rowSums(two_mat) / sum(two_mat)
+
+# function to compute the log-likelihood of a particular snippet of text:
+markov_score <- function(sequence, trans_matrix = theta, initial_probs = p) {
+  n <- length(sequence)
+  row_indices <- match(sequence[1:(n - 1)], LETTERS)
+  col_indices <- match(sequence[2:n], LETTERS)
+  as.numeric(log(p[match(sequence[1], LETTERS)])) + 
+    sum(log(theta[cbind(row_indices, col_indices)]), na.rm = TRUE)
+}
+```
+
+Now, test the hypothesis.
+
+We will pad K4 with the question mark in front of it, to make it 98 characters long, because 97 is prime, and a columnar transposition needs a non-prime number of characters.
+
+First, here are the possible single columnar transposition solutions:
+
+``` {r test}
+K4 <- c("?", K4)
+n <- length(K4)
+r_vec <- which(floor(n / (2:(n/2))) == n / (2:(n/2))) + 1
+
+# loop through the candidates:
+candidate <- vector("list", length(r_vec))
+loglik <- numeric(length(r_vec))
+for (i in 1:length(r_vec)) {
+  index <- (seq(r_vec[i], by = r_vec[i], length = n) - 1) %% (n + 1) + 1
+  candidate[[i]] <- K4[index]
+  loglik[i] <- markov_score(sequence = candidate[[i]])
+}
+
+data.frame(loglik = loglik, 
+           message = sapply(candidate, function(x) paste(x[1:20], collapse = ""))) %>%
+  arrange(desc(loglik))
+```
+
+Nothing here that looks like a solution.
+
+Next, here are the possible double columnar transposition solutions:
+
+``` {r double}
+# list all combinations of (r1, r2):
+grid <- expand.grid(r_vec, r_vec) %>%
+  rename(r1 = Var1, r2 = Var2) %>%
+  mutate(r = r1 * r2)
+
+# only retain those with a unique product:
+grid <- grid[!duplicated(grid$r), ]
+m <- nrow(grid)  # m = 73
+
+# loop through them and compute the solution:
+candidate <- vector("list", m)
+loglik <- numeric(m)
+for (i in 1:m) {
+  r <- grid$r[i]
+  index <- (seq(r, by = r, length = n) - 1) %% (n + 1) + 1
+  candidate[[i]] <- K4[index]
+  loglik[i] <- markov_score(sequence = candidate[[i]])
+}
+
+out <- data.frame(grid, 
+                  loglik = loglik, 
+                  first_part = sapply(candidate, function(x) paste(x[1:30], collapse = "")), 
+                  message = sapply(candidate, paste, collapse = "")) %>%
+  arrange(desc(loglik))
+
+select(out, -message)
+```
+
+It's clearly not a double columnar transposition, either.
+
+**Conclusion: False.**
+
+## Frequency Analysis
+
+Let's do a frequency analysis to see if it's plausible that K4 was encoded using any type of transposition cipher. If the 97 letters in K4 have a frequency distribution similar to that of plain English, then it's possible that it was encrypted using nothing more than a transposition. If not, then there must be some type of substitution cipher at work.
+
+We'll use three different sources of frequencies of letters in the English language:
+
+1. The [wikipedia article on letter frequency](https://en.wikipedia.org/wiki/Letter_frequency).
+
+2. The letters in the Google n-grams corpus
+
+3. The letters in the full text of "War and Peace".
+
+Here are these three distributions:
+
+``` {r frequencies}
+lf <- fread("../data/letter_frequencies.csv", data.table = FALSE)
+lf
+```
+
+Here is a quick comparison between these three sources of letter frequencies:
+
+``` {r comparison}
+# compare wikipedia to google
+ggplot(lf, aes(x = p_wiki, y = p_google)) + 
+  geom_abline(intercept = 0, slope = 1, linetype = 2, col = gray(0.7)) + 
+  geom_text(aes(label = letter))
+
+# compare wikipedia to war and peace:
+ggplot(lf, aes(x = p_wiki, y = p_war_peace)) + 
+  geom_abline(intercept = 0, slope = 1, linetype = 2, col = gray(0.7)) + 
+  geom_text(aes(label = letter))
+
+# function to compute the log-likelihood of a particular snippet of text
+# using only the frequency distribution:
+frequency_score <- function(sequence, letter_probs) {
+  n <- length(sequence)
+  sum(log(letter_probs[match(sequence, LETTERS)]), na.rm = TRUE)
+}
+```
+
+It looks like the frequency distributions from wikipedia and from War And Peace are the most similar pair, with the google-ngram-based frequency distribution being a bit different from them both. Overall I don't think it will make much of a difference.
+
+Let's randomly draw 5000 sets of 97 characters from the wikipedia frequency distribution, and compute the log-likelihood of each set:
+
+``` {r null-distribution-wiki}
+n_sim <- 5000
+ll_sim <- numeric(n_sim)
+for (i in 1:n_sim) {
+  seq <- sample(LETTERS, length(K4), prob = lf$p_wiki, replace = TRUE)
+  ll_sim[i] <- frequency_score(seq, letter_probs = lf$p_wiki)
+}
+range(ll_sim)
+```
+
+Now let's compute the log-likelihood of K4:
+
+``` {r loglik-K4}
+frequency_score(K4, letter_probs = lf$p_wiki)
+```
+
+It's not even close to the range of log-likelihood values we would expect from a length-97 snippet of English text. This basically proves that there is some type of substitution cipher being used for K4.
+
+Just to be totally sure, let's draw 5000 random sequences of letters from the full text of War and Peace, and build our null distribution of the log-likelihood from there:
+
+``` {r null-war-and-peace}
+# read in war and peace full text:
+wp <- readLines("../data/book-war-and-peace.txt")
+wp_vec <- unlist(strsplit(wp, split = "|"))
+wp_vec <- stri_enc_toascii(wp_vec)
+wp_vec <- toupper(wp_vec)
+wp_vec <- wp_vec[wp_vec %in% c(letters, LETTERS)]
+wp_vec <- toupper(wp_vec)
+
+n_sim <- 5000
+ll_sim <- numeric(n_sim)
+for (i in 1:n_sim) {
+  seq <- wp_vec[1:97 + sample(length(wp_vec) - 98, 1)]
+  ll_sim[i] <- frequency_score(seq, letter_probs = lf$p_goog)
+}
+
+range(ll_sim)
+```
+
+This is quite similar to the range of the null distribution that we got using the frequencies from wikipedia.
+

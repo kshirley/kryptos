@@ -415,10 +415,10 @@ vigenere(cipher = kryptos4,
 ### a transposition to follow.
 
 # let's try two sources of English language letter frequency:
-lf_wiki <- fread("letter_frequencies_wikipedia.csv", data.table = FALSE)
+lf_wiki <- fread("data/letter_frequencies_wikipedia.csv", data.table = FALSE)
 
 # read in the google word frequency list:
-lf_goog <- fread("~/archived/jsm2016/ngrams/count_1w.txt", data.table = FALSE)
+lf_goog <- fread("data/count_1w.txt", data.table = FALSE)
 names(lf_goog) <- c("word", "n")
 lf_goog$len <- nchar(lf_goog$word)
 x <- strsplit(lf_goog$word, split = "|")
@@ -439,12 +439,14 @@ lf %>% ggplot(aes(x = p_wiki, y = p_goog)) +
   geom_abline(slope = 1, intercept = 0)
 
 # read in war and peace full text:
-wp <- readLines("book-war-and-peace.txt")
+wp <- readLines("data/book-war-and-peace.txt")
 wp_vec <- unlist(strsplit(wp, split = "|"))
 wp_vec <- toupper(wp_vec)
 wp_vec <- wp_vec[wp_vec %in% c(letters, LETTERS)]
 wp_vec <- toupper(wp_vec)
 lf$p_wp <- round(as.numeric(table(wp_vec) / length(wp_vec)), 4)
+
+lf <- rename(lf, p_google = p_goog, p_war_peace = p_wp)
 
 # a few more comparisons:
 ggplot(lf, aes(x = p_wiki, y = p_goog)) + 

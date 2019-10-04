@@ -43,8 +43,8 @@ Hypothesis: Keyed Vigenere
 First, we'll load the required data and functions:
 
 ``` {r decode}
-cipher_text <- readLines("ciphertext.txt")
-vigenere_table <- readLines("vigenere_table.txt")
+cipher_text <- readLines("../data/ciphertext.txt")
+vigenere_table <- readLines("../data/vigenere_table.txt")
 K4 <- unlist(strsplit(paste(cipher_text[25:28], collapse = ""), ""))[28:124]
 
 # function to decrypt a cipher using a vigenere table and a key:
@@ -71,10 +71,10 @@ for (i in 1:26) V[[i]] <- alphabet[1:26 + i - 1]
 V <- do.call(cbind, V)
 
 # read in the scrabble dictionary:
-scrabble <- readLines("TWL06.txt")
+scrabble <- readLines("../data/TWL06.txt")
 
 # read in the 2-gram frequencies from the Google n-grams corpus:
-two_gram <- fread("count_2l.txt", data.table = FALSE)
+two_gram <- fread("../data/count_2l.txt", data.table = FALSE)
 names(two_gram) <- c("letters", "frequency")
 
 # normalize the frequencies to avoid integer overflow:
