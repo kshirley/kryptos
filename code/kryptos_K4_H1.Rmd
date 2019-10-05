@@ -21,7 +21,7 @@ knitr::opts_chunk$set(echo = TRUE,
 ```
 
 ```{r set-options, echo=FALSE}
-#setwd("~/misc/kryptos")
+#setwd("~/public_git/kryptos/code")
 options(width = 80)
 library(dplyr,      quietly = TRUE)
 library(knitr,      quietly = TRUE)

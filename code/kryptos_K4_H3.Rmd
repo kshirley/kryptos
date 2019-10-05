@@ -1,0 +1,319 @@
+---
+title: "Kryptos K4 Hypothesis 3"
+author: "Kenny Shirley"
+date: "October 4, 2019"
+output: 
+  html_document:
+    smart: FALSE
+    toc: TRUE
+    theme: readable
+editor_options: 
+  chunk_output_type: console
+---
+  
+```{r global-options, include = FALSE}
+## Global options
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, 
+                      message = FALSE, 
+                      cache = FALSE, 
+                      comment = "")
+```
+
+```{r set-options, echo=FALSE}
+#setwd("~/public_git/kryptos/code")
+options(width = 80)
+library(dplyr,      quietly = TRUE)
+library(knitr,      quietly = TRUE)
+library(tidyr,      quietly = TRUE)
+library(data.table, quietly = TRUE)
+library(ggplot2,    quietly = TRUE)
+library(plotly,     quietly = TRUE)
+library(stringi,    quietly = TRUE)
+```
+
+
+## K4 Hypothesis 3
+
+Hypothesis: Double columnar transposition followed by Keyed Vigenere
+
+What if the message was encoded using a combination of the two methods used in K1-K3? Specifically, let's hypothesize that the message was first encoded using a double columnar transposition (like K3), and then the resulting sequence of characters was encoded using a Keyed Vigenere cipher (like K1 and K2). How would we decode such a cipher?
+
+First, we would have to decode the Vigenere cipher, and then we would take the result, and decode the transposition. The interesting thing here is that even if we correctly decode the Vigenere cipher in the first step, the resulting sequence of characters will not be readable. The only characteristic that we can measure about them to see if we're on the right track is their frequency distribution.
+
+### Practice Decryption
+
+For practice, let's simulate this encryption method using a test message, and then we'll practice decrypting it.
+
+For our message, let's use the first 97 characters of the lyrics of the song "See You Again" by Wiz Khalifa (featuring Charlie Puth), which is the song I'm listening to right now:
+
+<pre>
+It's been a long day without you my friend, and I'll tell you all about it when I see you again.
+We've come a long way from where we began. Oh I'll tell you all about it when I see you again.
+</pre>
+
+Truncated to the first 97 characters, it read:
+
+<pre>
+ITSBEENALONGDAYWITHOUTYOUMYFRIENDANDILLTELLYOUALLABOUTITWHENISEEYOUAGAIN
+WEVECOMEALONGWAYFROMWHERE
+</pre>
+
+Suppose our double columnar transposition uses 7 and 49 rows, respectively, and that the Vigenere cipher uses the keyword "BASEBALL" and an alphabet using the word "KRYPTOS" (the same alphabet as K1 and K2).
+
+The resulting message would be:
+
+``` {r encode}
+message <- "It's been a long day without you my friend, and I'll tell you all about it when I see you again. We've come a long way from where we began. Oh I'll tell you all about it when I see you again."
+message <- unlist(strsplit(message, "|"))
+message <- message[message %in% c(letters, LETTERS)]
+message <- toupper(message)
+message <- c("?", message[1:97])
+
+# encode using double columnar transposition with 7 and 14 rows, respectively:
+r1 <- 7
+r2 <- 49
+step1 <- as.vector(t(t(matrix(message, nrow = r1, byrow = TRUE))[, r1:1]))
+step2 <- as.vector(t(t(matrix(step1, nrow = r2, byrow = TRUE))[, r2:1]))
+
+# Set up the Vigenere table using KRYPTOS to generate the alphabet:
+V <- vector("list", 26)
+alphabet <- rep(unlist(strsplit("KRYPTOSABCDEFGHIJLMNQUVWXZ", split = "")), 2)
+for (i in 1:26) V[[i]] <- alphabet[1:26 + i - 1]
+V <- do.call(cbind, V)
+
+# encode using Vigenere:
+keyword <- "BASEBALL"
+key_rows <- match(unlist(strsplit(keyword, "|")), V[, 1])
+key_rows <- key_rows[(0:96 %% nchar(keyword)) + 1]
+
+key_cols <- match(step2, V[1, ])
+q_mark <- step2 == "?"
+cipher_text  <- rep("?", length(step2))
+cipher_text[!q_mark] <- V[cbind(key_rows, key_cols[!q_mark])]
+cipher_text
+```
+
+Now let's study this cipher text as if we didn't know exactly how it was encoded.
+
+First, what is log-likelihood of this set of letters, given the unigram/frequency model of English?
+
+``` {r frequency}
+# read in letter frequencies:
+lf <- fread("../data/letter_frequencies.csv", data.table = FALSE)
+
+# frequency analysis function:
+frequency_score <- function(sequence, letter_probs) {
+  n <- length(sequence)
+  sum(log(letter_probs[match(sequence, LETTERS)]), na.rm = TRUE)
+}
+
+frequency_score(cipher_text, letter_probs = lf$p_wiki)
+```
+
+Recall that for a sequence of length 97, this number must be between roughly -260 and -310 to plausibly match the English language frequency distribution. From this calculation, we can clearly see that a substitution cipher is required to decode this cipher (i.e. not just a transposition).
+
+Let's decode this as if it were a Vigenere cipher with a keyword from the Scrabble dictionary, and the alphabet built using "KRYPTOS" (as in K1-K2). For each candidate solution, we'll compute both the bigram log-likelihood - to see if we have a final solution, and the frequency log-likelihood - to see if we have a candidate for a subsequent transposition.
+
+
+``` {r vigenere}
+# function to decrypt a cipher using a vigenere table and a key:
+decode_vigenere <- function(cipher, key, vigenere_table) {
+  stopifnot(all(cipher %in% c(LETTERS, "?")))
+  stopifnot(all(key %in% LETTERS))
+  row_indices <- match(key, V[, 1])
+  qmark <- cipher == "?"  # force a "?" to decode to itself
+  r <- row_indices[0:(length(cipher[!qmark]) - 1) %% length(row_indices) + 1]
+  D <- matrix(match(V[r, ], LETTERS) - rep(match(cipher[!qmark], LETTERS), 26), 
+              nrow = length(cipher[!qmark]), 
+              ncol = 26)
+  # one entry in each row of D equals zero, except for question marks, which are rows of NA
+  out <- rep("", length(cipher))
+  out[!qmark] <- V[1, (which(t(D) == 0) - 1) %% 26 + 1]
+  out[qmark] <- "?"
+  out
+}
+
+# read in the scrabble dictionary:
+scrabble <- readLines("../data/TWL06.txt")
+
+# read in the 2-gram frequencies from the Google n-grams corpus:
+two_gram <- fread("../data/count_2l.txt", data.table = FALSE)
+names(two_gram) <- c("letters", "frequency")
+
+# normalize the frequencies to avoid integer overflow:
+two_gram$normalized <- two_gram$frequency / min(two_gram$frequency)
+
+# build the transition matrix for the bigram model of English:
+two_mat <- matrix(0, 26, 26)
+row_index <- match(substr(two_gram$letters, 1, 1), letters)
+col_index <- match(substr(two_gram$letters, 2, 2), letters)
+two_mat[cbind(row_index, col_index)] <- two_gram$normalized
+rownames(two_mat) <- LETTERS
+colnames(two_mat) <- LETTERS
+
+# divide by row sums to get probabilities:
+theta <- two_mat / rowSums(two_mat)
+
+# get initial state distribution:
+p <- rowSums(two_mat) / sum(two_mat)
+
+# function to compute the log-likelihood of a particular snippet of text:
+markov_score <- function(sequence, trans_matrix = theta, initial_probs = p) {
+  n <- length(sequence)
+  row_indices <- match(sequence[1:(n - 1)], LETTERS)
+  col_indices <- match(sequence[2:n], LETTERS)
+  if (sequence[1] %in% LETTERS) {
+    out <- as.numeric(log(p[match(sequence[1], LETTERS)])) + 
+      sum(log(theta[cbind(row_indices, col_indices)]), na.rm = TRUE)
+  } else {
+    out <- sum(log(theta[cbind(row_indices, col_indices)]), na.rm = TRUE)
+  }
+  out
+}
+
+# Now, try all the words in the Scrabble dictionary for K4:
+candidate <- vector("list", length(scrabble))
+bigram_loglik <- numeric(length(scrabble))
+frequency_loglik <- numeric(length(scrabble))
+for (i in 1:length(scrabble)) {
+  candidate[[i]] <- decode_vigenere(cipher = cipher_text,
+                                    key = unlist(strsplit(scrabble[i], split = "")), 
+                                    vigenere_table = V)
+  bigram_loglik[i] <- markov_score(sequence = candidate[[i]])
+  frequency_loglik[i] <- frequency_score(sequence = candidate[[i]], 
+                                         letter_probs = lf$p_wiki)
+}
+
+out <- data.frame(keyword = scrabble,
+                  bigram_loglik = bigram_loglik,
+                  frequency_loglik = frequency_loglik)
+
+top_20_bigram <- order(bigram_loglik, decreasing = TRUE)[1:20]
+
+top_20_bigram_messages <- sapply(candidate[top_20_bigram], 
+                                 function(x) {paste0(paste(x[1:25], collapse = ""), "...")})
+
+top_20_freq <- order(frequency_loglik, decreasing = TRUE)[1:20]
+
+top_20_freq_messages <- sapply(candidate[top_20_freq], 
+                                 function(x) {paste0(paste(x[1:30], collapse = ""), "...")})
+
+```
+
+First, let's order the solutions in decreasing order of most likely according to the bigram model. This model essentially checks to see if a particular candidate is the final solution:
+
+``` {r bigram-candidates}
+arrange(out, desc(bigram_loglik)) %>% 
+  head(20) %>%
+  mutate(solution = top_20_bigram_messages)
+```
+
+The most likely solution is not significantly more likely than the second-most-likely solution, which is what we're looking for in the case that we have found the final solution.
+
+Next, let's order the candidate solutions by their frequency scores:
+
+``` {r freq-candidates}
+arrange(out, desc(frequency_loglik)) %>% 
+  head(20) %>%
+  mutate(solution = top_20_freq_messages)
+```
+
+A-ha! This time, the most likely message, in terms of its letter frequency, is $e^{14}$, or about 1 million times more likely than the next most likely solution. You can see that the actual message is still scrambled, but this technique correctly identified the first step of the solution: the Vigenere keyword is "BASEBALL".
+
+Now we just have to decode the transposition cipher to get the original message.
+
+Note: if none of the Scrabble keywords had yielded a message with a plausible frequency distribution, then we could stop here, rejecting the hypothesis.
+
+Let us now decode the double columnar transposition using the same method as we used to decode K3, where we start with the output of decoding the Vigenere cipher with keyword "BASEBALL".
+
+``` {r transposition}
+new_cipher <- candidate[[which(scrabble == "BASEBALL")]]
+n <- length(new_cipher)
+r_vec <- which(floor(n / (2:(n/2))) == n / (2:(n/2))) + 1
+
+# list all combinations of (r1, r2):
+grid <- expand.grid(r_vec, r_vec) %>%
+  rename(r1 = Var1, r2 = Var2) %>%
+  mutate(r = r1 * r2)
+
+# only retain those with a unique product:
+grid <- grid[!duplicated(grid$r), ]
+m <- nrow(grid)
+
+# loop through them and compute the solution:
+candidate <- vector("list", m)
+loglik <- numeric(m)
+for (i in 1:m) {
+  r <- grid$r[i]
+  index <- (seq(r, by = r, length = n) - 1) %% (n + 1) + 1
+  candidate[[i]] <- new_cipher[index]
+  loglik[i] <- markov_score(sequence = candidate[[i]])
+}
+
+out <- data.frame(grid, 
+                  loglik = loglik, 
+                  first_part = sapply(candidate, 
+                                   function(x) {
+                                     paste0(paste(x[1:30], collapse = ""), "...")
+                                   }
+                  ), 
+                  message = sapply(candidate, paste, collapse = "")) %>% 
+  arrange(desc(loglik))
+
+select(out, -message)
+```
+
+Alright, it worked! The most likely solution is the correct solution.
+
+### Test on K4
+
+Let's now test this method on K4.
+
+``` {r read-K4}
+cipher_text <- readLines("../data/ciphertext.txt")
+K4 <- unlist(strsplit(paste(cipher_text[25:28], collapse = ""), ""))[28:124]
+
+# Now, try all the words in the Scrabble dictionary for K4:
+candidate <- vector("list", length(scrabble))
+bigram_loglik <- numeric(length(scrabble))
+frequency_loglik <- numeric(length(scrabble))
+for (i in 1:length(scrabble)) {
+  candidate[[i]] <- decode_vigenere(cipher = K4,
+                                    key = unlist(strsplit(scrabble[i], split = "")), 
+                                    vigenere_table = V)
+  bigram_loglik[i] <- markov_score(sequence = candidate[[i]])
+  frequency_loglik[i] <- frequency_score(sequence = candidate[[i]], 
+                                         letter_probs = lf$p_wiki)
+}
+
+out <- data.frame(keyword = scrabble,
+                  bigram_loglik = bigram_loglik,
+                  frequency_loglik = frequency_loglik)
+
+top_20_bigram <- order(bigram_loglik, decreasing = TRUE)[1:20]
+
+top_20_bigram_messages <- sapply(candidate[top_20_bigram], 
+                                 function(x) {paste0(paste(x[1:25], collapse = ""), "...")})
+
+top_20_freq <- order(frequency_loglik, decreasing = TRUE)[1:20]
+
+top_20_freq_messages <- sapply(candidate[top_20_freq], 
+                                 function(x) {paste0(paste(x[1:30], collapse = ""), "...")})
+
+arrange(out, desc(bigram_loglik)) %>% 
+  head(20) %>%
+  mutate(solution = top_20_bigram_messages)
+
+arrange(out, desc(frequency_loglik)) %>% 
+  head(20) %>%
+  mutate(solution = top_20_freq_messages)
+
+```
+
+Alright, nothing stands out as a possibility here. The frequency analysis of every candidate solution shows that none of them can plausibly be drawn from the English language, since the most likely possibility has a log-likelihood of -325, and the range for English is roughly -260 to -310.
+
+No need to go on and try any transpositions.
+
+**Conclusion: False.**
+
