@@ -1,0 +1,47 @@
+1. Vigenere cipher just like K1-K2; scrabble dictionary; "KRYPTOS" as alphabet
+   n = 178,691
+   - rejected using bigram log-likelihood
+
+2. Transposition cipher just like K3; single or double columnar transposition, padded to 98
+   n = 11 (13, but two are redundant)
+   - rejected using bigram log-likelihood, also using frequency log-likelihood
+
+3. Transposition cipher followed by a Vigenere(list = scrabble dictionary, alphabet = "KRYPTOS")
+   n = 178,691
+   - rejected using frequency log-likelihood (no transpositions checked)
+
+4. Vigenere(list = scrabble, alphabet = "KRYPTOS"), followed by a single or double columnar transposition padded to 98.
+   n = 178,691 * 11  (13 possible factors of 98 (4 + 9) but two are redundant)
+   - rejected using bigram log-likelihood
+
+5. Running key from 97 consecutive characters in K1-K3 (no question marks), index offset by 0, 1, 2, ..., 25, additive encoding.
+   n = 17,472
+   - rejected using bigram and frequency log-likelihood
+
+6. Running key from 97 consecutive characters in K1-K3 (no question marks), Vigenere encoding (alphabet = "KRYPTOS" or "A-Z")
+   n = 672 * 2 = 1344
+
+
+
+
+
+
+Questions:
+- How do we 'extract' a running key from the ciphertext of K1-K3?
+- After we have a running key of length 97, how do we encode/decode the text? (Additive? Vigenere? Something else?)
+
+The length-97 key doesn't seem to be a block of consecutive characters.
+
+Some other possibilities:
+- columnar transposition
+- route transposition (see arrows in the encoding charts)
+- some sequence of indices given by a keyword like "KRYPTOS" (maybe some sort of fibonnaci sequence?)
+- some sequence of indices keyed by the encoding errors that Sanborn made (which he claims are intentional and important)
+
+encoding errors:
+"K" is the 57th character, and is a coding error (out of 63 characters in the first message).
+"R" is the 179th character, and is a coding error.
+"R" is the 116th character out of 372 characters in the second message.
+
+
+

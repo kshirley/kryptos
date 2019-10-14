@@ -1,0 +1,508 @@
+---
+title: "Kryptos K4 Hypothesis 6"
+author: "Kenny Shirley"
+date: "October 8, 2019"
+output: 
+  html_document:
+    smart: FALSE
+    toc: TRUE
+    theme: readable
+editor_options: 
+  chunk_output_type: console
+---
+  
+```{r global-options, include = FALSE}
+## Global options
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, 
+                      message = FALSE, 
+                      cache = FALSE, 
+                      comment = "")
+```
+
+```{r set-options, echo=FALSE}
+#setwd("~/public_git/kryptos/code")
+options(width = 80)
+library(dplyr,      quietly = TRUE)
+library(knitr,      quietly = TRUE)
+library(tidyr,      quietly = TRUE)
+library(data.table, quietly = TRUE)
+library(ggplot2,    quietly = TRUE)
+library(plotly,     quietly = TRUE)
+library(stringi,    quietly = TRUE)
+```
+
+
+## K4 Hypothesis 6
+
+Hypothesis: Running Key from ciphertext of K1-K3; various orderings
+
+A running key cipher means that there is some sequence of 97 characters that, when combined with the cipher text, reveals the plaintext. By "combine", I mean that the cipher text letters in A-Z correspond to the integers 0, 1, ..., 25, and the letters in the running key correspond to the integers $j$ up to $j+25$, for some 'offset' $j \in 0, 1, 2, ..., 25$. In other words, there are 26 different 'versions' of the running key, depending on how you additively 'combine' the running key with the ciphertext.
+
+In this hypothesis, we'll try a few 'creative' ways to pick out a running key from the ciphertext of K1-K3.
+
+``` {r code-setup}
+# read in the vigenere table:
+vigenere_table <- readLines("../data/vigenere_table.txt")
+v <- data.frame(vigenere_table)
+
+# read in the kryptos cipher text:
+sculpture <- readLines("../data/ciphertext.txt")
+cipher_text <- unlist(strsplit(paste(sculpture, collapse = ""), ""))
+K4 <- cipher_text[773:869]
+cipher_text <- cipher_text[1:772]
+
+# remove the question marks from the first three parts:
+cipher_text <- cipher_text[cipher_text %in% LETTERS]
+
+# read in letter frequencies:
+lf <- fread("../data/letter_frequencies.csv", data.table = FALSE)
+
+# frequency analysis function:
+frequency_score <- function(sequence, letter_probs) {
+  n <- length(sequence)
+  sum(log(letter_probs[match(sequence, LETTERS)]), na.rm = TRUE)
+}
+
+# read in the 2-gram frequencies from the Google n-grams corpus:
+two_gram <- fread("../data/count_2l.txt", data.table = FALSE)
+names(two_gram) <- c("letters", "frequency")
+
+# normalize the frequencies to avoid integer overflow:
+two_gram$normalized <- two_gram$frequency / min(two_gram$frequency)
+
+# build the transition matrix for the bigram model of English:
+two_mat <- matrix(0, 26, 26)
+row_index <- match(substr(two_gram$letters, 1, 1), letters)
+col_index <- match(substr(two_gram$letters, 2, 2), letters)
+two_mat[cbind(row_index, col_index)] <- two_gram$normalized
+rownames(two_mat) <- LETTERS
+colnames(two_mat) <- LETTERS
+
+# divide by row sums to get probabilities:
+theta <- two_mat / rowSums(two_mat)
+
+# get initial state distribution:
+p <- rowSums(two_mat) / sum(two_mat)
+
+# function to compute the log-likelihood of a particular snippet of text:
+markov_score <- function(sequence, trans_matrix = theta, initial_probs = p) {
+  n <- length(sequence)
+  row_indices <- match(sequence[1:(n - 1)], LETTERS)
+  col_indices <- match(sequence[2:n], LETTERS)
+  as.numeric(log(p[match(sequence[1], LETTERS)])) + 
+    sum(log(theta[cbind(row_indices, col_indices)]), na.rm = TRUE)
+}
+```
+
+
+### Wraparound first 4 rows of sculpture
+
+Let's try the running key you get from reading the first row of the ciphertext left-to-right, then the second row right-to-left, then the third row left-to-right, and the first 3 letters of the fourth row right-to-left.
+
+``` {r key}
+s <- data.frame(sculpture)
+key <- c(unlist(strsplit(sculpture[1], "")), 
+         rev(unlist(strsplit(sculpture[2], ""))), 
+         unlist(strsplit(sculpture[3], "")), 
+         rev(unlist(strsplit(sculpture[4], "")))[1:3])
+
+# try this running key with various offset values:
+m1 <- match(key, LETTERS) - 1
+m2 <- match(K4, LETTERS) - 1
+
+candidate <- vector("list", 26)
+bigram_loglik <- numeric(26)
+freq_loglik <- numeric(26)
+for (i in 1:26) {
+  offset <- i - 1
+  index <- (m2 - (m1 + offset)) %% 26 + 1
+  candidate[[i]] <- LETTERS[index]
+  bigram_loglik[i] <- markov_score(sequence = candidate[[i]])
+  freq_loglik[i] <- frequency_score(sequence = candidate[[i]], 
+                                    letter_probs = lf$p_wiki) 
+}
+
+data.frame(offset = 0:25, 
+           bigram_loglik, 
+           freq_loglik, 
+           message = sapply(candidate, function(x) {
+             paste0(paste(x[1:40], collapse = ""), "...")}
+           )) %>%
+  arrange(desc(bigram_loglik))
+
+
+data.frame(offset = 0:25, 
+           bigram_loglik, 
+           freq_loglik, 
+           message = sapply(candidate, paste, collapse = "")) %>%
+  arrange(desc(bigram_loglik))
+
+
+### Now try decoding as a Vigenere with sculpture table and plain table:
+decode_vigenere <- function(cipher, key, vigenere_table) {
+  stopifnot(all(cipher %in% c(LETTERS, "?")))
+  stopifnot(all(key %in% LETTERS))
+  row_indices <- match(key, vigenere_table[, 1])
+  qmark <- cipher == "?"  # force a "?" to decode to itself
+  r <- row_indices[0:(length(cipher[!qmark]) - 1) %% length(row_indices) + 1]
+  D <- matrix(match(vigenere_table[r, ], LETTERS) - rep(match(cipher[!qmark], LETTERS), 26), 
+              nrow = length(cipher[!qmark]), 
+              ncol = 26)
+  # one entry in each row of D equals zero, except for question marks, which are rows of NA
+  out <- rep("", length(cipher))
+  out[!qmark] <- vigenere_table[1, (which(t(D) == 0) - 1) %% 26 + 1]
+  out[qmark] <- "?"
+  out
+}
+
+# store the value of the Kryptos Vigenere table in a matrix:
+V_kryptos <- vector("list", 26)
+alphabet_kryptos <- rep(unlist(strsplit("KRYPTOSABCDEFGHIJLMNQUVWXZ", split = "")), 2)
+for (i in 1:26) V_kryptos[[i]] <- alphabet_kryptos[1:26 + i - 1]
+V_kryptos <- do.call(cbind, V_kryptos)
+
+V_plain <- vector("list", 26)
+alphabet_plain <- rep(unlist(strsplit(LETTERS, split = "")), 2)
+for (i in 1:26) V_plain[[i]] <- alphabet_plain[1:26 + i - 1]
+V_plain <- do.call(cbind, V_plain)
+
+out1 <- decode_vigenere(cipher = K4, key = key, vigenere_table = V_kryptos)
+out2 <- decode_vigenere(cipher = K4, key = key, vigenere_table = V_plain)
+
+markov_score(sequence = out1)
+frequency_score(sequence = out1, letter_probs = lf$p_wiki) 
+
+markov_score(sequence = out2)
+frequency_score(sequence = out2, letter_probs = lf$p_wiki) 
+```
+
+
+### Wraparound first 4 rows of Sanborn's encoding charts
+
+Let's try a slightly different key, where we do the 'route transposition' as described above, but we use Sanborn's encoding charts rather than the sculpture iteslf:
+
+``` {r key2}
+cipher_with_qmarks <- unlist(strsplit(paste(sculpture, collapse = ""), ""))
+cipher_mat <- matrix(cipher_with_qmarks[-63][1:124], nrow = 4, byrow = TRUE)
+
+key <- c(cipher_mat[1, ], 
+         cipher_mat[2, 31:1], 
+         cipher_mat[3, ], 
+         cipher_mat[4, 31:28])
+
+# try this running key with various offset values:
+m1 <- match(key, LETTERS) - 1
+m2 <- match(K4, LETTERS) - 1
+
+candidate <- vector("list", 26)
+bigram_loglik <- numeric(26)
+freq_loglik <- numeric(26)
+for (i in 1:26) {
+  offset <- i - 1
+  index <- (m2 - (m1 + offset)) %% 26 + 1
+  candidate[[i]] <- LETTERS[index]
+  bigram_loglik[i] <- markov_score(sequence = candidate[[i]])
+  freq_loglik[i] <- frequency_score(sequence = candidate[[i]], 
+                                    letter_probs = lf$p_wiki) 
+}
+
+data.frame(offset = 0:25, 
+           bigram_loglik, 
+           freq_loglik, 
+           message = sapply(candidate, function(x) {
+             paste0(paste(x[1:40], collapse = ""), "...")}
+           )) %>%
+  arrange(desc(bigram_loglik))
+
+
+data.frame(offset = 0:25, 
+           bigram_loglik, 
+           freq_loglik, 
+           message = sapply(candidate, paste, collapse = "")) %>%
+  arrange(desc(bigram_loglik))
+
+# try the vigenere decoding:
+out1 <- decode_vigenere(cipher = K4, key = key, vigenere_table = V_kryptos)
+out2 <- decode_vigenere(cipher = K4, key = key, vigenere_table = V_plain)
+
+markov_score(sequence = out1)
+frequency_score(sequence = out1, letter_probs = lf$p_wiki) 
+
+markov_score(sequence = out2)
+frequency_score(sequence = out2, letter_probs = lf$p_wiki) 
+```
+
+### Wraparound first 4 rows of Sanborn's encoding charts; including "D"
+
+Same key but include the "D" that stands alone in row 3 of Sanborn's charts:
+
+``` {r key3}
+key <- c(cipher_mat[1, ], 
+         cipher_mat[2, 31:1], 
+         "D", 
+         cipher_mat[3, 31:1], 
+         cipher_mat[4, 1:3])
+
+# try this running key with various offset values:
+m1 <- match(key, LETTERS) - 1
+m2 <- match(K4, LETTERS) - 1
+
+candidate <- vector("list", 26)
+bigram_loglik <- numeric(26)
+freq_loglik <- numeric(26)
+for (i in 1:26) {
+  offset <- i - 1
+  index <- (m2 - (m1 + offset)) %% 26 + 1
+  candidate[[i]] <- LETTERS[index]
+  bigram_loglik[i] <- markov_score(sequence = candidate[[i]])
+  freq_loglik[i] <- frequency_score(sequence = candidate[[i]], 
+                                    letter_probs = lf$p_wiki) 
+}
+
+data.frame(offset = 0:25, 
+           bigram_loglik, 
+           freq_loglik, 
+           message = sapply(candidate, function(x) {
+             paste0(paste(x[1:40], collapse = ""), "...")}
+           )) %>%
+  arrange(desc(bigram_loglik))
+
+
+data.frame(offset = 0:25, 
+           bigram_loglik, 
+           freq_loglik, 
+           message = sapply(candidate, paste, collapse = "")) %>%
+  arrange(desc(bigram_loglik))
+
+# try the vigenere decoding:
+out1 <- decode_vigenere(cipher = K4, key = key, vigenere_table = V_kryptos)
+out2 <- decode_vigenere(cipher = K4, key = key, vigenere_table = V_plain)
+
+markov_score(sequence = out1)
+frequency_score(sequence = out1, letter_probs = lf$p_wiki) 
+
+markov_score(sequence = out2)
+frequency_score(sequence = out2, letter_probs = lf$p_wiki) 
+```
+
+
+
+
+``` {r eda, eval = FALSE, echo = FALSE}
+# Using the berlin clock clue, 'back-solve' for the running key using
+# offset = 0, v_kryptos, and v_alphabet:
+K4[64:74]
+c("B", "E", "R", "L", "I", "N", "C", "L", "O", "C", "K")
+
+# reverse engineer the vigenere key that would produce BERLIN CLOCK
+col_index <- match(c("B", "E", "R", "L", "I", "N", "C", "L", "O", "C", "K"), 
+                   V_kryptos[1, ])
+key <- rep("", 11)
+for (i in 1:11) {
+  key[i] <- V_kryptos[which(V_kryptos[, col_index[i]] == K4[63 + i]), 1]
+}
+key
+# "E" "L" "Y" "O" "I" "E" "C" "B" "A" "Q" "K"
+
+# # for each element of the 11-character key, let's get the list of occurrences in
+# # the K1-K3 cipher text:
+# pos <- vector("list", 11)
+# for (i in 1:11) {
+#   pos[[i]] <- which(cipher_with_qmarks[1:435] == key[i])
+# }
+# sapply(pos, length)
+# 
+# # Is there any regular sequence of integers that spells out ELYOIECBAQK?
+# # o_mat <- outer(pos[[1]], pos[[2]], "-")
+# # o_mat[o_mat > 0]
+# 
+# # combine the first two versions:
+# p <- expand.grid(pos[[1]], pos[[2]]) %>%
+#   filter(Var1 < Var2)
+# 
+# for (j in 3:11) {
+#   print(j)
+#   print(nrow(p))
+#   xx <- expand.grid(p[, j - 1], pos[[j]])
+#   names(xx) <- paste0("Var", c(j - 1, j))
+#   add <- p[rep(seq_len(nrow(p)), length(pos[[j]])), 1:(j - 2)]
+#   p <- data.frame(add, xx)
+#   names(p)[1:(j - 2)] <- paste0("Var", 1:(j - 2))
+#   p <- p[p[, j] > p[, j - 1], ]
+# }
+
+
+
+
+
+
+# w1 <- which(cipher_with_qmarks == "E")
+# w2 <- which(cipher_with_qmarks == "L")
+# 
+# x <- sort(unique(as.numeric(outer(w2, w1, "-"))))
+# x <- x[x > 0]
+# 
+# w1 <- which(cipher_with_qmarks == "L")
+# w2 <- which(cipher_with_qmarks == "O")
+# 
+# y <- sort(unique(as.numeric(outer(w2, w1, "-"))))
+# y <- y[y > 0]
+# 
+
+
+match(c("K", "R", "Y", "P", "T", "O", "S"), LETTERS)
+# [1] 11 18 25 16 20 15 19
+
+(match(c("K", "R", "Y", "P", "T", "O", "S"), LETTERS) - 1) %% 26
+# [1] 10 17 24 15 19 14 18
+
+# transposition on first 14 rows?
+n <- 434
+r_vec <- which(floor(n / (2:(n/2))) == n / (2:(n/2))) + 1
+r_vec
+# [1]   2   7  14  31  62 217
+
+n <- 63
+r_vec <- which(floor(n / (2:(n/2))) == n / (2:(n/2))) + 1
+r_vec
+# [1]  3  7  9 21
+
+tmp <- vector("list", length(r_vec))
+for (i in 1:length(r_vec)) {
+  tmp[[i]] <- matrix(1:63, nrow = r_vec[i], byrow = TRUE)
+}
+# OK, in the third one, '57' is the lower left hand corner.
+# could be a clue about a columnar transposition
+
+keys <- vector("list", length(r_vec))
+for (i in 1:length(r_vec)) {
+  # index <- (seq(r_vec[i], by = r_vec[i], length = n) - 1) %% (n + 1) + 1
+  index <- as.integer(t(t(tmp[[i]])[, r_vec[i]:1]))
+  keys[[i]] <- cipher_with_qmarks[1:63][index]
+}
+
+keys[[3]]
+#  [1] "K" "E" "Y" "Q" "F" "K" "S" "L" "E" "Y" "V" "U" "U" "I" "R" "D" "R" "M" "R" "J" "V" "X"
+# [23] "V" "N" "J" "F" "U" "D" "Y" "L" "Q" "J" "S" "K" "A" "F" "M" "Q" "L" "B" "Y" "H" "Z" "X"
+# [45] "P" "F" "T" "T" "Q" "Q" "G" "L" "Y" "H" "D" "M" "R" "V" "T" "N" "D" "U" "Z"
+
+# try this as a solution:
+sol <- decode_vigenere(cipher = K4, key = keys[[3]], 
+                       vigenere_table = V_kryptos)
+sol
+
+sol <- decode_vigenere(cipher = K4, key = keys[[3]], 
+                       vigenere_table = V_plain)
+sol
+
+frequency_score(sequence = sol, letter_probs = lf$p_wiki)
+
+
+# drop the first 3 characters of the key:
+decode_vigenere(cipher = K4, key = keys[[3]][-(1:3)],
+                vigenere_table = V_kryptos)
+
+decode_vigenere(cipher = K4, key = keys[[3]][-(1:3)],
+                vigenere_table = V_plain)
+
+
+key <- c(keys[[3]], cipher_with_qmarks[64:97])
+
+# try this running key with various offset values:
+m1 <- match(key, LETTERS) - 1
+m2 <- match(K4, LETTERS) - 1
+
+candidate <- vector("list", 26)
+bigram_loglik <- numeric(26)
+freq_loglik <- numeric(26)
+for (i in 1:26) {
+  offset <- i - 1
+  index <- (m2 - (m1 + offset)) %% 26 + 1
+  candidate[[i]] <- LETTERS[index]
+  bigram_loglik[i] <- markov_score(sequence = candidate[[i]])
+  freq_loglik[i] <- frequency_score(sequence = candidate[[i]], 
+                                    letter_probs = lf$p_wiki) 
+}
+
+data.frame(offset = 0:25, 
+           bigram_loglik, 
+           freq_loglik, 
+           message = sapply(candidate, function(x) {
+             paste0(paste(x[1:40], collapse = ""), "...")}
+           )) %>%
+  arrange(desc(bigram_loglik))
+
+
+data.frame(offset = 0:25, 
+           bigram_loglik, 
+           freq_loglik, 
+           message = sapply(candidate, paste, collapse = "")) %>%
+  arrange(desc(bigram_loglik))
+
+
+
+# K2 ciphertext transpositions:
+n <- 372
+r_vec <- which(floor(n / (2:(n/2))) == n / (2:(n/2))) + 1
+r_vec
+# [1]   2   3   4   6  12  31  62  93 124 186
+
+tmp <- vector("list", length(r_vec))
+for (i in 1:length(r_vec)) {
+  tmp[[i]] <- matrix(1:372, nrow = r_vec[i], byrow = TRUE)
+}
+
+keys <- vector("list", length(r_vec))
+for (i in 1:length(r_vec)) {
+  # index <- (seq(r_vec[i], by = r_vec[i], length = n) - 1) %% (n + 1) + 1
+  index <- as.integer(t(t(tmp[[i]])[, r_vec[i]:1]))
+  keys[[i]] <- cipher_with_qmarks[1:n][index]
+}
+
+
+
+
+
+# list all combinations of (r1, r2):
+grid <- expand.grid(r_vec, r_vec) %>%
+  rename(r1 = Var1, r2 = Var2) %>%
+  mutate(r = r1 * r2)
+
+# only retain those with a unique product:
+grid <- grid[!duplicated(grid$r), ]
+grid <- filter(grid, r <= 372)
+m <- nrow(grid)
+
+tmp <- vector("list", m)
+for (i in 1:m) {
+  tmp[[i]] <- matrix(1:372, nrow = grid$r[i], byrow = TRUE)
+}
+
+
+# wp <- readLines("../data/book-war-and-peace.txt")
+# wp_vec <- unlist(strsplit(wp, split = "|"))
+# #wp_vec <- toupper(wp_vec)
+# wp_vec <- wp_vec[wp_vec %in% c(letters, LETTERS)]
+# wp_vec <- toupper(wp_vec)
+# 
+# # For practice, let's write a function that computes the probability that a 
+# # sequence of characters is a simple substitution cipher of English:
+# rank_score <- function(sequence, letter_probs) {
+#   n <- length(sequence)
+#   
+#   sum(log(letter_probs[match(sequence, LETTERS)]), na.rm = TRUE)
+# }
+
+
+```
+
+
+
+
+
+
+
+
+
+
