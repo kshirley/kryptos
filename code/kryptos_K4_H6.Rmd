@@ -354,6 +354,17 @@ key
 match(c("K", "R", "Y", "P", "T", "O", "S"), LETTERS)
 # [1] 11 18 25 16 20 15 19
 
+k_seq <- match(c("K", "R", "Y", "P", "T", "O", "S"), LETTERS)
+kk <- (cumsum(rep(k_seq, 14)) - 1) %% 435 + 1
+key <- cipher_text[kk][1:97]
+
+decode_vigenere(cipher = K4, key = key, vigenere_table = V_kryptos)
+decode_vigenere(cipher = K4, key = key, vigenere_table = V_plain)
+
+
+
+
+
 (match(c("K", "R", "Y", "P", "T", "O", "S"), LETTERS) - 1) %% 26
 # [1] 10 17 24 15 19 14 18
 
